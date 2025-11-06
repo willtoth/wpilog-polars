@@ -1,0 +1,41 @@
+# Rust build artifacts
+/target/
+**/target/
+
+# Cargo lock file (uncomment if this is a library)
+# Cargo.lock
+
+# Rust debug files
+**/*.rs.bk
+*.pdb
+
+# IDE / Editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Test output files
+*.wpilog
+*.parquet
+*.csv
+
+# Benchmark results
+/benches/results/
+criterion/
+testlog/
+reference_impl/
+docs/
+
+# Documentation build
+/target/doc/
+
+# Temporary files
+*.tmp
+*.temp
+/tmp/
+
+# OS files
+Thumbs.db
