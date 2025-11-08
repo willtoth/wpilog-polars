@@ -3642,6 +3642,7 @@ dependencies = [
  "byteorder",
  "clap",
  "criterion",
+ "hex",
  "memmap2",
  "polars",
  "rand 0.8.5",

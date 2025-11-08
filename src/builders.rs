@@ -165,6 +165,21 @@ impl ColumnBuilder {
                 let list_series = Series::new(self.name.as_str().into(), values);
                 Ok(list_series)
             }
+            PolarsDataType::Struct(_) => {
+                // For now, convert struct binary data to hex strings
+                // TODO: Full deserialization when Polars struct support is complete
+                let values: Vec<Option<String>> = self
+                    .values
+                    .into_iter()
+                    .map(|opt| match opt {
+                        Some(PolarsValue::Struct(data)) => {
+                            Some(format!("0x{}", hex::encode(&data)))
+                        }
+                        _ => None,
+                    })
+                    .collect();
+                Ok(Series::new(self.name.as_str().into(), values))
+            }
         }
     }
 }

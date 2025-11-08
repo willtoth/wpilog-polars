@@ -64,6 +64,7 @@ pub mod converter;
 pub mod datalog;
 pub mod error;
 pub mod schema;
+pub mod struct_support;
 pub mod types;
 
 pub use error::{Result, WpilogError};

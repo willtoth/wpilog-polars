@@ -25,9 +25,6 @@
 # Benchmark results
 /benches/results/
 criterion/
-testlog/
-reference_impl/
-docs/
 
 # Documentation build
 /target/doc/

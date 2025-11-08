@@ -2,7 +2,7 @@ use anyhow::{Context, Result};
 use clap::{Parser, Subcommand, ValueEnum};
 use polars::prelude::*;
 use std::path::PathBuf;
-use wpilog_polars::{infer_schema, WpilogParser};
+use wpilog_polars::WpilogParser;
 
 /// High-performance WPILog to Polars DataFrame converter
 #[derive(Parser)]
@@ -246,23 +246,39 @@ fn apply_filter(df: DataFrame, col_name: &str, value: &str) -> Result<DataFrame>
 }
 
 fn schema_command(input: PathBuf, verbose: bool) -> Result<()> {
+    use wpilog_polars::datalog::{DataLogIterator, DataLogReader};
+    use wpilog_polars::schema::WpilogSchema;
+
     println!("Reading schema from {}...", input.display());
 
     let data = std::fs::read(&input)?;
-    let schema = infer_schema(&data)
+    let reader = DataLogReader::new(&data);
+    let records = reader.records()?;
+
+    // Infer WpilogSchema (not Polars schema) to get original type info
+    let wpilog_schema = WpilogSchema::infer_from_records(records)
         .with_context(|| format!("Failed to infer schema from: {}", input.display()))?;
 
     println!("\nSchema for {}:", input.display());
-    println!("{} columns found\n", schema.len());
+    println!("{} columns found\n", wpilog_schema.num_columns() + 1); // +1 for timestamp
+
+    // Always show timestamp first
+    println!("  {:30} {}", "timestamp", "Int64");
 
     if verbose {
-        for (name, dtype) in schema.iter() {
-            println!("  {:30} {:?}", name, dtype);
+        for col in wpilog_schema.columns() {
+            println!("  {:30} {:?}", col.name, col.dtype);
         }
     } else {
-        for (name, dtype) in schema.iter() {
-            let type_str = format!("{:?}", dtype);
-            println!("  {:30} {}", name, type_str);
+        for col in wpilog_schema.columns() {
+            // Format the type nicely, showing struct names
+            let type_str = match &col.dtype {
+                wpilog_polars::types::PolarsDataType::Struct(name) => {
+                    format!("Struct({})", name)
+                }
+                other => format!("{:?}", other.to_polars_dtype()),
+            };
+            println!("  {:30} {}", col.name, type_str);
         }
     }
 

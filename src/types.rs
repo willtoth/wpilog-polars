@@ -22,6 +22,7 @@ pub enum PolarsDataType {
     Float32Array,
     Float64Array,
     StringArray,
+    Struct(String), // Struct with type name (e.g., "Pose2d")
 }
 
 impl PolarsDataType {
@@ -41,9 +42,20 @@ impl PolarsDataType {
             "double[]" => Ok(PolarsDataType::Float64Array),
             "string[]" => Ok(PolarsDataType::StringArray),
             "msgpack" => Ok(PolarsDataType::String), // Serialize msgpack as string
-            "struct" => Ok(PolarsDataType::String),  // Serialize struct as string
             "json" => Ok(PolarsDataType::String),    // JSON as string
             "protobuf" => Ok(PolarsDataType::String), // Protobuf as string
+            // Check for struct types (format: "struct:TypeName")
+            _ if type_name.starts_with("struct:") => {
+                let struct_name = type_name.strip_prefix("struct:").unwrap().to_string();
+                Ok(PolarsDataType::Struct(struct_name))
+            }
+            // Struct schema entries - store as strings for now (contain text schema definitions)
+            "structschema" => Ok(PolarsDataType::String),
+            // Generic "struct" without type name - treat as binary string
+            "struct" => {
+                eprintln!("Warning: Generic 'struct' type without name, treating as binary string");
+                Ok(PolarsDataType::String)
+            }
             // Unknown/custom types: treat as string (binary/serialized data)
             // This allows graceful handling of custom WPILog types
             _ => {
@@ -69,6 +81,8 @@ impl PolarsDataType {
             PolarsDataType::Float32Array => DataType::List(Box::new(DataType::Float32)),
             PolarsDataType::Float64Array => DataType::List(Box::new(DataType::Float64)),
             PolarsDataType::StringArray => DataType::List(Box::new(DataType::String)),
+            // For now, treat structs as binary strings until full Polars struct support is complete
+            PolarsDataType::Struct(_) => DataType::String,
         }
     }
 
@@ -82,6 +96,19 @@ impl PolarsDataType {
                 | PolarsDataType::Float64Array
                 | PolarsDataType::StringArray
         )
+    }
+
+    /// Returns true if this is a struct type.
+    pub fn is_struct(&self) -> bool {
+        matches!(self, PolarsDataType::Struct(_))
+    }
+
+    /// Gets the struct name if this is a struct type.
+    pub fn struct_name(&self) -> Option<&str> {
+        match self {
+            PolarsDataType::Struct(name) => Some(name.as_str()),
+            _ => None,
+        }
     }
 }
 
@@ -98,6 +125,7 @@ pub enum PolarsValue {
     Float32Array(Vec<f32>),
     Float64Array(Vec<f64>),
     StringArray(Vec<String>),
+    Struct(Vec<u8>), // Store raw binary data for struct values
     Null,
 }
 
@@ -115,7 +143,8 @@ impl PolarsValue {
             PolarsValue::Float32Array(_) => PolarsDataType::Float32Array,
             PolarsValue::Float64Array(_) => PolarsDataType::Float64Array,
             PolarsValue::StringArray(_) => PolarsDataType::StringArray,
-            PolarsValue::Null => PolarsDataType::String, // Default to string for null
+            PolarsValue::Struct(_) => PolarsDataType::String, // Treat as string for now
+            PolarsValue::Null => PolarsDataType::String,      // Default to string for null
         }
     }
 
@@ -179,5 +208,23 @@ mod tests {
             PolarsDataType::Int64Array.to_polars_dtype(),
             DataType::List(Box::new(DataType::Int64))
         );
+    }
+
+    #[test]
+    fn test_struct_type_detection() {
+        // Test struct type detection
+        let dtype = PolarsDataType::from_wpilog_type("struct:Pose2d").unwrap();
+        assert!(dtype.is_struct());
+        assert_eq!(dtype.struct_name(), Some("Pose2d"));
+
+        let dtype2 = PolarsDataType::from_wpilog_type("struct:Translation2d").unwrap();
+        assert_eq!(dtype2.struct_name(), Some("Translation2d"));
+
+        // Non-struct types should not be structs
+        assert!(!PolarsDataType::Float64.is_struct());
+        assert!(!PolarsDataType::String.is_struct());
+
+        // Struct types should map to String for now
+        assert_eq!(dtype.to_polars_dtype(), DataType::String);
     }
 }

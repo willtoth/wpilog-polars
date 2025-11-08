@@ -123,6 +123,11 @@ impl WpilogConverter {
                 Ok(PolarsValue::Float64Array(record.get_double_array()?))
             }
             PolarsDataType::StringArray => Ok(PolarsValue::StringArray(record.get_string_array()?)),
+            PolarsDataType::Struct(_) => {
+                // Store raw binary data for struct values
+                // TODO: Deserialize using struct_support module when Polars integration is complete
+                Ok(PolarsValue::Struct(record.data.clone()))
+            }
         }
     }
 }
