@@ -1,7 +1,6 @@
 //! Conversion from struct values to Polars types.
 
 use polars::prelude::*;
-use std::sync::Arc;
 
 use super::deserializer::{FieldValue, StructValue};
 use super::registry::StructRegistry;
@@ -9,13 +8,13 @@ use super::types::*;
 use crate::error::{Result, WpilogError};
 
 /// Converter for struct values to Polars types.
-pub struct PolarsConverter {
-    registry: Arc<StructRegistry>,
+pub struct PolarsConverter<'a> {
+    registry: &'a StructRegistry,
 }
 
-impl PolarsConverter {
+impl<'a> PolarsConverter<'a> {
     /// Create a new converter with the given registry.
-    pub fn new(registry: Arc<StructRegistry>) -> Self {
+    pub fn new(registry: &'a StructRegistry) -> Self {
         Self { registry }
     }
 
@@ -422,7 +421,7 @@ mod tests {
             .register("Translation2d".to_string(), "double x; double y")
             .unwrap();
 
-        let converter = PolarsConverter::new(Arc::new(registry));
+        let converter = PolarsConverter::new(&registry);
         let dtype = converter.schema_to_dtype("Translation2d").unwrap();
 
         match dtype {
@@ -444,9 +443,8 @@ mod tests {
             .register("Translation2d".to_string(), "double x; double y")
             .unwrap();
 
-        let registry_arc = Arc::new(registry);
-        let deserializer = StructDeserializer::new((*registry_arc).clone());
-        let converter = PolarsConverter::new(registry_arc);
+        let deserializer = StructDeserializer::new(&registry);
+        let converter = PolarsConverter::new(&registry);
 
         // Create binary data: x=1.5, y=2.5
         let mut data = vec![0u8; 16];
@@ -473,9 +471,8 @@ mod tests {
             .register("Translation2d".to_string(), "double x; double y")
             .unwrap();
 
-        let registry_arc = Arc::new(registry);
-        let deserializer = StructDeserializer::new((*registry_arc).clone());
-        let converter = PolarsConverter::new(registry_arc);
+        let deserializer = StructDeserializer::new(&registry);
+        let converter = PolarsConverter::new(&registry);
 
         // Create two struct values
         let mut data1 = vec![0u8; 16];
@@ -503,9 +500,8 @@ mod tests {
             .register("Point".to_string(), "double x; double y")
             .unwrap();
 
-        let registry_arc = Arc::new(registry);
-        let deserializer = StructDeserializer::new((*registry_arc).clone());
-        let converter = PolarsConverter::new(registry_arc);
+        let deserializer = StructDeserializer::new(&registry);
+        let converter = PolarsConverter::new(&registry);
 
         // Create struct values with some None values
         let mut data1 = vec![0u8; 16];
@@ -554,9 +550,8 @@ mod tests {
             .register("Velocity".to_string(), "double vx; double vy")
             .unwrap();
 
-        let registry_arc = Arc::new(registry);
-        let deserializer = StructDeserializer::new((*registry_arc).clone());
-        let converter = PolarsConverter::new(registry_arc);
+        let deserializer = StructDeserializer::new(&registry);
+        let converter = PolarsConverter::new(&registry);
 
         // Create two arrays of structs
         // Array 1: [(1.0, 2.0), (3.0, 4.0)]
@@ -609,7 +604,7 @@ mod tests {
             .register("Point".to_string(), "double x; double y")
             .unwrap();
 
-        let converter = PolarsConverter::new(Arc::new(registry));
+        let converter = PolarsConverter::new(&registry);
 
         // Create empty struct array and verify the dtype
         let struct_dtype = converter.schema_to_dtype("Point").unwrap();
@@ -639,9 +634,8 @@ mod tests {
             .register("Pose".to_string(), "Vector2d position; double rotation")
             .unwrap();
 
-        let registry_arc = Arc::new(registry);
-        let deserializer = StructDeserializer::new((*registry_arc).clone());
-        let converter = PolarsConverter::new(registry_arc);
+        let deserializer = StructDeserializer::new(&registry);
+        let converter = PolarsConverter::new(&registry);
 
         // Create struct array with nested structs
         let mut data1 = vec![0u8; 24];
