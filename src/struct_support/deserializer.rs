@@ -478,4 +478,163 @@ mod tests {
         let result = deserializer.deserialize("Translation2d", &data);
         assert!(result.is_err());
     }
+
+    #[test]
+    fn test_deserialize_struct_array() {
+        // Test deserializing multiple structs from a single buffer
+        let mut registry = StructRegistry::new();
+        registry
+            .register("Point".to_string(), "double x; double y")
+            .unwrap();
+
+        let deserializer = StructDeserializer::new(registry);
+
+        // Get the struct schema to determine size
+        let schema = deserializer.registry().get("Point").unwrap();
+        let struct_size = schema.total_size;
+        assert_eq!(struct_size, 16); // 2 doubles = 16 bytes
+
+        // Create binary data for 3 points: (1.0, 2.0), (3.0, 4.0), (5.0, 6.0)
+        let mut data = vec![0u8; struct_size * 3];
+        LittleEndian::write_f64(&mut data[0..8], 1.0);
+        LittleEndian::write_f64(&mut data[8..16], 2.0);
+        LittleEndian::write_f64(&mut data[16..24], 3.0);
+        LittleEndian::write_f64(&mut data[24..32], 4.0);
+        LittleEndian::write_f64(&mut data[32..40], 5.0);
+        LittleEndian::write_f64(&mut data[40..48], 6.0);
+
+        // Deserialize each struct from the array
+        let num_structs = data.len() / struct_size;
+        assert_eq!(num_structs, 3);
+
+        let mut structs = Vec::new();
+        for i in 0..num_structs {
+            let start = i * struct_size;
+            let end = start + struct_size;
+            let struct_data = &data[start..end];
+            let result = deserializer.deserialize("Point", struct_data).unwrap();
+            structs.push(result);
+        }
+
+        // Verify all three structs
+        assert_eq!(structs.len(), 3);
+
+        // First point (1.0, 2.0)
+        match structs[0].fields.get("x").unwrap() {
+            FieldValue::Float64(v) => assert_eq!(*v, 1.0),
+            _ => panic!("Expected Float64"),
+        }
+        match structs[0].fields.get("y").unwrap() {
+            FieldValue::Float64(v) => assert_eq!(*v, 2.0),
+            _ => panic!("Expected Float64"),
+        }
+
+        // Second point (3.0, 4.0)
+        match structs[1].fields.get("x").unwrap() {
+            FieldValue::Float64(v) => assert_eq!(*v, 3.0),
+            _ => panic!("Expected Float64"),
+        }
+        match structs[1].fields.get("y").unwrap() {
+            FieldValue::Float64(v) => assert_eq!(*v, 4.0),
+            _ => panic!("Expected Float64"),
+        }
+
+        // Third point (5.0, 6.0)
+        match structs[2].fields.get("x").unwrap() {
+            FieldValue::Float64(v) => assert_eq!(*v, 5.0),
+            _ => panic!("Expected Float64"),
+        }
+        match structs[2].fields.get("y").unwrap() {
+            FieldValue::Float64(v) => assert_eq!(*v, 6.0),
+            _ => panic!("Expected Float64"),
+        }
+    }
+
+    #[test]
+    fn test_struct_array_size_validation() {
+        // Test that struct array size must be a multiple of struct size
+        let mut registry = StructRegistry::new();
+        registry
+            .register("Point".to_string(), "double x; double y")
+            .unwrap();
+
+        let deserializer = StructDeserializer::new(registry);
+        let schema = deserializer.registry().get("Point").unwrap();
+        let struct_size = schema.total_size;
+
+        // Create data that's not a multiple of struct size (17 bytes instead of 16 or 32)
+        let invalid_data = vec![0u8; struct_size + 1];
+
+        // The last element shouldn't be deserializable since it's incomplete
+        // We test by trying to deserialize at the invalid offset
+        let result = deserializer.deserialize("Point", &invalid_data[struct_size..]);
+        assert!(result.is_err()); // Should fail due to insufficient data
+    }
+
+    #[test]
+    fn test_struct_array_with_nested_structs() {
+        // Test struct arrays where each element contains nested structs
+        let mut registry = StructRegistry::new();
+
+        // Register nested struct
+        registry
+            .register("Vector2d".to_string(), "double x; double y")
+            .unwrap();
+
+        // Register struct with nested field
+        registry
+            .register("Velocity".to_string(), "Vector2d linear; double angular")
+            .unwrap();
+
+        let deserializer = StructDeserializer::new(registry);
+        let schema = deserializer.registry().get("Velocity").unwrap();
+        let struct_size = schema.total_size;
+        assert_eq!(struct_size, 24); // 2 doubles + 1 double = 24 bytes
+
+        // Create binary data for 2 velocities
+        let mut data = vec![0u8; struct_size * 2];
+
+        // First velocity: linear=(1.0, 2.0), angular=0.5
+        LittleEndian::write_f64(&mut data[0..8], 1.0);
+        LittleEndian::write_f64(&mut data[8..16], 2.0);
+        LittleEndian::write_f64(&mut data[16..24], 0.5);
+
+        // Second velocity: linear=(3.0, 4.0), angular=1.5
+        LittleEndian::write_f64(&mut data[24..32], 3.0);
+        LittleEndian::write_f64(&mut data[32..40], 4.0);
+        LittleEndian::write_f64(&mut data[40..48], 1.5);
+
+        // Deserialize both structs
+        let mut structs = Vec::new();
+        for i in 0..2 {
+            let start = i * struct_size;
+            let end = start + struct_size;
+            let struct_data = &data[start..end];
+            let result = deserializer.deserialize("Velocity", struct_data).unwrap();
+            structs.push(result);
+        }
+
+        assert_eq!(structs.len(), 2);
+
+        // Verify first velocity
+        match structs[0].fields.get("linear").unwrap() {
+            FieldValue::Struct(nested) => {
+                match nested.fields.get("x").unwrap() {
+                    FieldValue::Float64(v) => assert_eq!(*v, 1.0),
+                    _ => panic!("Expected Float64"),
+                }
+                match nested.fields.get("y").unwrap() {
+                    FieldValue::Float64(v) => assert_eq!(*v, 2.0),
+                    _ => panic!("Expected Float64"),
+                }
+            }
+            _ => panic!("Expected nested Struct"),
+        }
+
+        // Verify second velocity angular component
+        match structs[1].fields.get("angular").unwrap() {
+            FieldValue::Float64(v) => assert_eq!(*v, 1.5),
+            _ => panic!("Expected Float64"),
+        }
+    }
 }

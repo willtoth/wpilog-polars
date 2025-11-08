@@ -22,7 +22,8 @@ pub enum PolarsDataType {
     Float32Array,
     Float64Array,
     StringArray,
-    Struct(String), // Struct with type name (e.g., "Pose2d")
+    Struct(String),      // Struct with type name (e.g., "Pose2d")
+    StructArray(String), // Array of structs (e.g., "SwerveModuleState[]")
 }
 
 impl PolarsDataType {
@@ -46,9 +47,13 @@ impl PolarsDataType {
             "protobuf" => Ok(PolarsDataType::String), // Protobuf as string
             // Check for struct array types (format: "struct:TypeName[]")
             _ if type_name.starts_with("struct:") && type_name.ends_with("[]") => {
-                // Arrays of structs are not yet fully supported, treat as binary string
-                eprintln!("Warning: Struct arrays ('{}') not yet fully supported, treating as binary string", type_name);
-                Ok(PolarsDataType::String)
+                let struct_name = type_name
+                    .strip_prefix("struct:")
+                    .unwrap()
+                    .strip_suffix("[]")
+                    .unwrap()
+                    .to_string();
+                Ok(PolarsDataType::StructArray(struct_name))
             }
             // Check for struct types (format: "struct:TypeName")
             _ if type_name.starts_with("struct:") => {
@@ -87,8 +92,9 @@ impl PolarsDataType {
             PolarsDataType::Float32Array => DataType::List(Box::new(DataType::Float32)),
             PolarsDataType::Float64Array => DataType::List(Box::new(DataType::Float64)),
             PolarsDataType::StringArray => DataType::List(Box::new(DataType::String)),
-            // For now, treat structs as binary strings until full Polars struct support is complete
+            // Structs and struct arrays will be properly converted in the builders
             PolarsDataType::Struct(_) => DataType::String,
+            PolarsDataType::StructArray(_) => DataType::String,
         }
     }
 
@@ -101,6 +107,7 @@ impl PolarsDataType {
                 | PolarsDataType::Float32Array
                 | PolarsDataType::Float64Array
                 | PolarsDataType::StringArray
+                | PolarsDataType::StructArray(_)
         )
     }
 
@@ -109,10 +116,23 @@ impl PolarsDataType {
         matches!(self, PolarsDataType::Struct(_))
     }
 
+    /// Returns true if this is a struct array type.
+    pub fn is_struct_array(&self) -> bool {
+        matches!(self, PolarsDataType::StructArray(_))
+    }
+
     /// Gets the struct name if this is a struct type.
     pub fn struct_name(&self) -> Option<&str> {
         match self {
             PolarsDataType::Struct(name) => Some(name.as_str()),
+            _ => None,
+        }
+    }
+
+    /// Gets the struct name if this is a struct array type.
+    pub fn struct_array_name(&self) -> Option<&str> {
+        match self {
+            PolarsDataType::StructArray(name) => Some(name.as_str()),
             _ => None,
         }
     }
@@ -132,6 +152,7 @@ pub enum PolarsValue {
     Float64Array(Vec<f64>),
     StringArray(Vec<String>),
     Struct(crate::struct_support::StructValue), // Store deserialized struct value
+    StructArray(Vec<crate::struct_support::StructValue>), // Store array of deserialized structs
     Null,
 }
 
@@ -150,6 +171,14 @@ impl PolarsValue {
             PolarsValue::Float64Array(_) => PolarsDataType::Float64Array,
             PolarsValue::StringArray(_) => PolarsDataType::StringArray,
             PolarsValue::Struct(sv) => PolarsDataType::Struct(sv.struct_name.clone()),
+            PolarsValue::StructArray(svs) => {
+                // Get struct name from first element, or default to empty string
+                let struct_name = svs
+                    .first()
+                    .map(|sv| sv.struct_name.clone())
+                    .unwrap_or_default();
+                PolarsDataType::StructArray(struct_name)
+            }
             PolarsValue::Null => PolarsDataType::String, // Default to string for null
         }
     }
@@ -232,5 +261,70 @@ mod tests {
 
         // Struct types should map to String for now
         assert_eq!(dtype.to_polars_dtype(), DataType::String);
+    }
+
+    #[test]
+    fn test_struct_array_type_detection() {
+        // Test struct array type detection
+        let dtype = PolarsDataType::from_wpilog_type("struct:SwerveModuleState[]").unwrap();
+        assert!(dtype.is_struct_array());
+        assert!(dtype.is_array());
+        assert!(!dtype.is_struct());
+        assert_eq!(dtype.struct_array_name(), Some("SwerveModuleState"));
+
+        let dtype2 = PolarsDataType::from_wpilog_type("struct:ChassisSpeeds[]").unwrap();
+        assert!(dtype2.is_struct_array());
+        assert_eq!(dtype2.struct_array_name(), Some("ChassisSpeeds"));
+
+        // Non-struct-array types should not be struct arrays
+        assert!(!PolarsDataType::Float64.is_struct_array());
+        assert!(!PolarsDataType::Int64Array.is_struct_array());
+        assert!(!PolarsDataType::Struct("Pose2d".to_string()).is_struct_array());
+
+        // Struct array types should map to String for now
+        assert_eq!(dtype.to_polars_dtype(), DataType::String);
+    }
+
+    #[test]
+    fn test_struct_array_name_extraction() {
+        // Test extracting struct name from struct array types
+        let dtype = PolarsDataType::from_wpilog_type("struct:MyCustomType[]").unwrap();
+        if let PolarsDataType::StructArray(name) = dtype {
+            assert_eq!(name, "MyCustomType");
+        } else {
+            panic!("Expected StructArray variant");
+        }
+    }
+
+    #[test]
+    fn test_polars_value_struct_array_dtype() {
+        // Test that PolarsValue::StructArray correctly reports its dtype
+        use crate::struct_support::StructValue;
+
+        let struct_val1 = StructValue {
+            struct_name: "TestStruct".to_string(),
+            fields: std::collections::HashMap::new(),
+        };
+        let struct_val2 = StructValue {
+            struct_name: "TestStruct".to_string(),
+            fields: std::collections::HashMap::new(),
+        };
+
+        let array_value = PolarsValue::StructArray(vec![struct_val1, struct_val2]);
+        let dtype = array_value.dtype();
+
+        assert!(dtype.is_struct_array());
+        assert_eq!(dtype.struct_array_name(), Some("TestStruct"));
+    }
+
+    #[test]
+    fn test_polars_value_empty_struct_array() {
+        // Test empty struct array
+        let empty_array = PolarsValue::StructArray(vec![]);
+        let dtype = empty_array.dtype();
+
+        assert!(dtype.is_struct_array());
+        // Empty array should have empty struct name
+        assert_eq!(dtype.struct_array_name(), Some(""));
     }
 }

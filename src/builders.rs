@@ -199,6 +199,55 @@ impl ColumnBuilder {
                     ))
                 }
             }
+            PolarsDataType::StructArray(ref struct_name) => {
+                // Convert struct array values to Polars List(Struct)
+                if let Some(reg) = registry {
+                    let converter = PolarsConverter::new(Arc::clone(reg));
+
+                    // Collect struct array values, preserving None for sparse data
+                    let struct_array_values: Vec<Option<Vec<crate::struct_support::StructValue>>> =
+                        self.values
+                            .into_iter()
+                            .map(|opt| match opt {
+                                Some(PolarsValue::StructArray(svs)) => Some(svs),
+                                _ => None,
+                            })
+                            .collect();
+
+                    if struct_array_values.is_empty() {
+                        // Return empty list series
+                        let struct_dtype = converter.schema_to_dtype(struct_name)?;
+                        let list_dtype = DataType::List(Box::new(struct_dtype));
+                        return Ok(Series::new_empty(self.name.as_str().into(), &list_dtype));
+                    }
+
+                    // Convert to List(Struct) series
+                    let mut list_series_vec = Vec::new();
+                    for opt_structs in struct_array_values {
+                        let series = match opt_structs {
+                            Some(structs) if !structs.is_empty() => {
+                                // Convert array of structs to a series
+                                converter.values_to_series(struct_name, &structs)?
+                            }
+                            _ => {
+                                // Empty or null array
+                                let struct_dtype = converter.schema_to_dtype(struct_name)?;
+                                Series::new_empty("".into(), &struct_dtype)
+                            }
+                        };
+                        list_series_vec.push(series);
+                    }
+
+                    // Create a List series from the struct series
+                    let list_series = Series::new(self.name.as_str().into(), list_series_vec);
+                    Ok(list_series)
+                } else {
+                    // Fallback: convert to hex strings if no registry available
+                    Err(WpilogError::SchemaError(
+                        "Struct registry required for struct array columns".to_string(),
+                    ))
+                }
+            }
         }
     }
 }
