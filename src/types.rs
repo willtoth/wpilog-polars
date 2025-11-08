@@ -6,7 +6,7 @@
 //! - Conversion from PolarsDataType to Polars DataType
 //! - `PolarsValue`: enum for storing typed values during accumulation
 
-use crate::error::{Result, WpilogError};
+use crate::error::Result;
 use polars::prelude::*;
 
 /// Data types supported by the WPILog to Polars converter.
@@ -125,7 +125,7 @@ pub enum PolarsValue {
     Float32Array(Vec<f32>),
     Float64Array(Vec<f64>),
     StringArray(Vec<String>),
-    Struct(Vec<u8>), // Store raw binary data for struct values
+    Struct(crate::struct_support::StructValue), // Store deserialized struct value
     Null,
 }
 
@@ -143,8 +143,8 @@ impl PolarsValue {
             PolarsValue::Float32Array(_) => PolarsDataType::Float32Array,
             PolarsValue::Float64Array(_) => PolarsDataType::Float64Array,
             PolarsValue::StringArray(_) => PolarsDataType::StringArray,
-            PolarsValue::Struct(_) => PolarsDataType::String, // Treat as string for now
-            PolarsValue::Null => PolarsDataType::String,      // Default to string for null
+            PolarsValue::Struct(sv) => PolarsDataType::Struct(sv.struct_name.clone()),
+            PolarsValue::Null => PolarsDataType::String, // Default to string for null
         }
     }
 

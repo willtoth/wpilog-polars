@@ -7,8 +7,10 @@
 //! - Proper Polars List serialization for array types
 
 use crate::error::{Result, WpilogError};
+use crate::struct_support::{PolarsConverter, StructRegistry};
 use crate::types::{PolarsDataType, PolarsValue};
 use polars::prelude::*;
+use std::sync::Arc;
 
 /// A builder for a single column with sparse data support.
 pub struct ColumnBuilder {
@@ -48,7 +50,7 @@ impl ColumnBuilder {
     }
 
     /// Builds a Polars Series from the accumulated values.
-    pub fn build(self) -> Result<Series> {
+    pub fn build(self, registry: Option<&Arc<StructRegistry>>) -> Result<Series> {
         match self.dtype {
             PolarsDataType::Float64 => {
                 let values: Vec<Option<f64>> = self
@@ -165,20 +167,36 @@ impl ColumnBuilder {
                 let list_series = Series::new(self.name.as_str().into(), values);
                 Ok(list_series)
             }
-            PolarsDataType::Struct(_) => {
-                // For now, convert struct binary data to hex strings
-                // TODO: Full deserialization when Polars struct support is complete
-                let values: Vec<Option<String>> = self
-                    .values
-                    .into_iter()
-                    .map(|opt| match opt {
-                        Some(PolarsValue::Struct(data)) => {
-                            Some(format!("0x{}", hex::encode(&data)))
-                        }
-                        _ => None,
-                    })
-                    .collect();
-                Ok(Series::new(self.name.as_str().into(), values))
+            PolarsDataType::Struct(ref struct_name) => {
+                // Convert struct values to Polars structs
+                if let Some(reg) = registry {
+                    let converter = PolarsConverter::new(Arc::clone(reg));
+
+                    // Collect struct values
+                    let struct_values: Vec<_> = self
+                        .values
+                        .into_iter()
+                        .filter_map(|opt| match opt {
+                            Some(PolarsValue::Struct(sv)) => Some(sv),
+                            _ => None,
+                        })
+                        .collect();
+
+                    if struct_values.is_empty() {
+                        // Return empty struct series
+                        let dtype = converter.schema_to_dtype(struct_name)?;
+                        return Ok(Series::new_empty(self.name.as_str().into(), &dtype));
+                    }
+
+                    // Convert all struct values to a single series
+                    let series = converter.values_to_series(struct_name, &struct_values)?;
+                    Ok(series.with_name(self.name.as_str().into()))
+                } else {
+                    // Fallback: convert to hex strings if no registry available
+                    Err(WpilogError::SchemaError(
+                        "Struct registry required for struct columns".to_string(),
+                    ))
+                }
             }
         }
     }
@@ -188,6 +206,7 @@ impl ColumnBuilder {
 pub struct DataFrameBuilder {
     timestamp: Vec<i64>,
     columns: Vec<ColumnBuilder>,
+    registry: Option<Arc<StructRegistry>>,
 }
 
 impl DataFrameBuilder {
@@ -207,7 +226,14 @@ impl DataFrameBuilder {
         Self {
             timestamp: Vec::with_capacity(capacity),
             columns,
+            registry: None,
         }
+    }
+
+    /// Sets the struct registry for this builder.
+    pub fn with_registry(mut self, registry: StructRegistry) -> Self {
+        self.registry = Some(Arc::new(registry));
+        self
     }
 
     /// Adds a row to the builder.
@@ -232,8 +258,9 @@ impl DataFrameBuilder {
         columns.push(Series::new("timestamp".into(), self.timestamp).into());
 
         // Add all other columns
+        let registry_ref = self.registry.as_ref();
         for builder in self.columns {
-            columns.push(builder.build()?.into());
+            columns.push(builder.build(registry_ref)?.into());
         }
 
         DataFrame::new(columns).map_err(|e| WpilogError::PolarsError(e))
@@ -262,7 +289,7 @@ mod tests {
         builder.push(None);
         builder.push(Some(PolarsValue::Float64(3.0)));
 
-        let series = builder.build().unwrap();
+        let series = builder.build(None).unwrap();
         assert_eq!(series.len(), 3);
         assert_eq!(series.name(), "test");
     }
@@ -275,7 +302,7 @@ mod tests {
         builder.push(None);
         builder.push(Some(PolarsValue::Int64Array(vec![4, 5])));
 
-        let series = builder.build().unwrap();
+        let series = builder.build(None).unwrap();
         assert_eq!(series.len(), 3);
     }
 

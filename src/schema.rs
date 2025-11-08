@@ -96,6 +96,11 @@ impl WpilogSchema {
                     continue;
                 }
 
+                // Skip structschema entries - they are metadata, not data columns
+                if start_data.type_name == "structschema" {
+                    continue;
+                }
+
                 let dtype = PolarsDataType::from_wpilog_type(&start_data.type_name)?;
 
                 let column = ColumnInfo {
