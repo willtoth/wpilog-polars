@@ -34,45 +34,63 @@ impl WpilogConverter {
     }
 
     /// First pass: builds struct registry from structschema entries and infers schema.
+    /// Optimized to use a single loop by processing both struct schemas and main schema columns simultaneously.
     fn build_registry_and_schema(reader: &DataLogReader) -> Result<(StructRegistry, WpilogSchema)> {
         let mut registry = StructRegistry::new();
+        let mut schema = WpilogSchema::new();
         let mut schema_entries = std::collections::HashMap::new();
+        let mut schema_defs = std::collections::HashMap::new();
+        let mut finished_entries = std::collections::HashSet::new();
 
-        // Collect all structschema entries first
+        // Single pass: collect struct schema definitions AND infer main schema simultaneously
         for record_result in reader.records()? {
             let record = record_result?;
 
             if record.is_start() {
                 let start_data = record.get_start_data()?;
 
-                // Check if this is a struct schema definition
+                // Check if this is a struct schema definition entry
                 if start_data.type_name == "structschema" {
-                    schema_entries.insert(start_data.entry, start_data.name.clone());
+                    // Store the mapping from entry ID to schema name
+                    // Format: "/.schema/struct:StructName" -> "StructName"
+                    let simple_name =
+                        if let Some(stripped) = start_data.name.strip_prefix("/.schema/struct:") {
+                            stripped.to_string()
+                        } else {
+                            start_data.name.clone()
+                        };
+                    schema_entries.insert(start_data.entry, simple_name);
+                } else {
+                    // This is a regular data column - add to schema (unless already finished)
+                    if !finished_entries.contains(&start_data.entry) {
+                        let dtype = PolarsDataType::from_wpilog_type(&start_data.type_name)?;
+                        let column = crate::schema::ColumnInfo {
+                            entry_id: start_data.entry,
+                            name: start_data.name,
+                            dtype,
+                            nullable: true,
+                            metadata: start_data.metadata,
+                        };
+                        schema.add_column(column);
+                    }
                 }
+            } else if record.is_finish() {
+                // Track finished entries (needed by both processes)
+                let entry_id = record.get_finish_entry()?;
+                finished_entries.insert(entry_id);
+            } else if !record.is_control() && schema_entries.contains_key(&record.entry) {
+                // This is struct schema data - collect it immediately
+                let struct_name = schema_entries.get(&record.entry).unwrap().clone();
+                let schema_text = record.get_string();
+                schema_defs.insert(struct_name, schema_text);
             }
         }
 
-        // Collect all struct schema definitions
-        let mut schema_defs = std::collections::HashMap::new();
-        for record_result in reader.records()? {
-            let record = record_result?;
-
-            if !record.is_control() && schema_entries.contains_key(&record.entry) {
-                // This is struct schema data
-                let struct_name = schema_entries.get(&record.entry).unwrap();
-                let schema_text = record.get_string();
-
-                // Extract just the struct type name from the full path
-                // Format: "/.schema/struct:StructName" -> "StructName"
-                let simple_name =
-                    if let Some(stripped) = struct_name.strip_prefix("/.schema/struct:") {
-                        stripped.to_string()
-                    } else {
-                        struct_name.clone()
-                    };
-
-                schema_defs.insert(simple_name, schema_text);
-            }
+        // Validate that we found at least one column
+        if schema.num_columns() == 0 {
+            return Err(WpilogError::SchemaError(
+                "No columns found in WPILog file".to_string(),
+            ));
         }
 
         // Register structs with dependency resolution (retry until all are registered or no progress)
@@ -110,9 +128,6 @@ impl WpilogConverter {
                 }
             }
         }
-
-        // Infer the main schema
-        let schema = WpilogSchema::infer_from_records(reader.records()?)?;
 
         Ok((registry, schema))
     }
