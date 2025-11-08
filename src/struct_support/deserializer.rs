@@ -1,6 +1,7 @@
 //! Binary deserializer for WPILib packed structs.
 
 use byteorder::{ByteOrder, LittleEndian};
+use std::cell::RefCell;
 use std::collections::HashMap;
 
 use super::registry::StructRegistry;
@@ -8,26 +9,49 @@ use super::types::*;
 use crate::error::{Result, WpilogError};
 
 /// Deserializer for binary struct data.
-pub struct StructDeserializer {
-    registry: StructRegistry,
+pub struct StructDeserializer<'a> {
+    registry: &'a StructRegistry,
+    /// Cache for last schema lookup to avoid repeated HashMap lookups
+    last_schema_cache: RefCell<Option<(String, &'a StructSchema)>>,
 }
 
-impl StructDeserializer {
+impl<'a> StructDeserializer<'a> {
     /// Create a new deserializer with the given registry.
-    pub fn new(registry: StructRegistry) -> Self {
-        Self { registry }
+    pub fn new(registry: &'a StructRegistry) -> Self {
+        Self {
+            registry,
+            last_schema_cache: RefCell::new(None),
+        }
     }
 
     /// Get a reference to the registry.
     pub fn registry(&self) -> &StructRegistry {
-        &self.registry
+        self.registry
+    }
+
+    /// Get schema with caching to avoid repeated HashMap lookups
+    fn get_schema(&self, struct_name: &str) -> Result<&'a StructSchema> {
+        // Check cache first
+        if let Some((cached_name, cached_schema)) = self.last_schema_cache.borrow().as_ref() {
+            if cached_name == struct_name {
+                return Ok(*cached_schema);
+            }
+        }
+
+        // Cache miss - look up in registry
+        let schema = self.registry.get(struct_name).ok_or_else(|| {
+            WpilogError::SchemaError(format!("Struct '{}' not found in registry", struct_name))
+        })?;
+
+        // Cache the result
+        *self.last_schema_cache.borrow_mut() = Some((struct_name.to_string(), schema));
+
+        Ok(schema)
     }
 
     /// Deserialize a struct from binary data.
     pub fn deserialize(&self, struct_name: &str, data: &[u8]) -> Result<StructValue> {
-        let schema = self.registry.get(struct_name).ok_or_else(|| {
-            WpilogError::SchemaError(format!("Struct '{}' not found in registry", struct_name))
-        })?;
+        let schema = self.get_schema(struct_name)?;
 
         // Check that data is large enough
         if data.len() < schema.total_size {
@@ -39,7 +63,8 @@ impl StructDeserializer {
             )));
         }
 
-        let mut fields = HashMap::new();
+        // Pre-allocate HashMap with exact capacity to avoid reallocations
+        let mut fields = HashMap::with_capacity(schema.fields.len());
 
         for field in &schema.fields {
             match field {
@@ -126,9 +151,7 @@ impl StructDeserializer {
                 Ok(FieldValue::Array(values))
             }
             FieldType::Struct(struct_name) => {
-                let nested_schema = self.registry.get(struct_name).ok_or_else(|| {
-                    WpilogError::SchemaError(format!("Nested struct '{}' not found", struct_name))
-                })?;
+                let nested_schema = self.get_schema(struct_name)?;
 
                 let struct_data = &data[offset..offset + nested_schema.total_size];
                 let nested_value = self.deserialize(struct_name, struct_data)?;
@@ -170,9 +193,7 @@ impl StructDeserializer {
             FieldType::Int32 | FieldType::UInt32 | FieldType::Float32 => Ok(4),
             FieldType::Int64 | FieldType::UInt64 | FieldType::Float64 => Ok(8),
             FieldType::Struct(struct_name) => {
-                let schema = self.registry.get(struct_name).ok_or_else(|| {
-                    WpilogError::SchemaError(format!("Struct '{}' not found", struct_name))
-                })?;
+                let schema = self.get_schema(struct_name)?;
                 Ok(schema.total_size)
             }
             FieldType::Array { .. } => Err(WpilogError::ParseError(
@@ -293,7 +314,7 @@ mod tests {
             .register("Translation2d".to_string(), "double x; double y")
             .unwrap();
 
-        let deserializer = StructDeserializer::new(registry);
+        let deserializer = StructDeserializer::new(&registry);
 
         // Create binary data: x=1.5, y=2.5 (little-endian doubles)
         let mut data = vec![0u8; 16];
@@ -323,7 +344,7 @@ mod tests {
             .register("Mixed".to_string(), "int8 a; int16 b; int32 c; double d")
             .unwrap();
 
-        let deserializer = StructDeserializer::new(registry);
+        let deserializer = StructDeserializer::new(&registry);
 
         // Create binary data: a=10, b=1000, c=100000, d=3.14
         let mut data = vec![0u8; 15];
@@ -362,7 +383,7 @@ mod tests {
             .register("Vector".to_string(), "double values[4]")
             .unwrap();
 
-        let deserializer = StructDeserializer::new(registry);
+        let deserializer = StructDeserializer::new(&registry);
 
         // Create binary data: [1.0, 2.0, 3.0, 4.0]
         let mut data = vec![0u8; 32];
@@ -394,7 +415,7 @@ mod tests {
             .register("Packed".to_string(), "int8 a:4; int8 b:4")
             .unwrap();
 
-        let deserializer = StructDeserializer::new(registry);
+        let deserializer = StructDeserializer::new(&registry);
 
         // Create binary data: a=5 (0101), b=10 (1010)
         // Packed as: bbbbaaaa = 10100101 = 0xA5
@@ -430,7 +451,7 @@ mod tests {
             )
             .unwrap();
 
-        let deserializer = StructDeserializer::new(registry);
+        let deserializer = StructDeserializer::new(&registry);
 
         // Create binary data: translation.x=1.0, translation.y=2.0, rotation=3.14
         let mut data = vec![0u8; 24];
@@ -470,7 +491,7 @@ mod tests {
             .register("Translation2d".to_string(), "double x; double y")
             .unwrap();
 
-        let deserializer = StructDeserializer::new(registry);
+        let deserializer = StructDeserializer::new(&registry);
 
         // Only 8 bytes, but need 16
         let data = vec![0u8; 8];
@@ -487,7 +508,7 @@ mod tests {
             .register("Point".to_string(), "double x; double y")
             .unwrap();
 
-        let deserializer = StructDeserializer::new(registry);
+        let deserializer = StructDeserializer::new(&registry);
 
         // Get the struct schema to determine size
         let schema = deserializer.registry().get("Point").unwrap();
@@ -558,7 +579,7 @@ mod tests {
             .register("Point".to_string(), "double x; double y")
             .unwrap();
 
-        let deserializer = StructDeserializer::new(registry);
+        let deserializer = StructDeserializer::new(&registry);
         let schema = deserializer.registry().get("Point").unwrap();
         let struct_size = schema.total_size;
 
@@ -586,7 +607,7 @@ mod tests {
             .register("Velocity".to_string(), "Vector2d linear; double angular")
             .unwrap();
 
-        let deserializer = StructDeserializer::new(registry);
+        let deserializer = StructDeserializer::new(&registry);
         let schema = deserializer.registry().get("Velocity").unwrap();
         let struct_size = schema.total_size;
         assert_eq!(struct_size, 24); // 2 doubles + 1 double = 24 bytes

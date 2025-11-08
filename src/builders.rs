@@ -10,7 +10,6 @@ use crate::error::{Result, WpilogError};
 use crate::struct_support::{PolarsConverter, StructRegistry};
 use crate::types::{PolarsDataType, PolarsValue};
 use polars::prelude::*;
-use std::sync::Arc;
 
 /// A builder for a single column with sparse data support.
 pub struct ColumnBuilder {
@@ -50,7 +49,7 @@ impl ColumnBuilder {
     }
 
     /// Builds a Polars Series from the accumulated values.
-    pub fn build(self, registry: Option<&Arc<StructRegistry>>) -> Result<Series> {
+    pub fn build(self, registry: Option<&StructRegistry>) -> Result<Series> {
         match self.dtype {
             PolarsDataType::Float64 => {
                 let values: Vec<Option<f64>> = self
@@ -170,7 +169,7 @@ impl ColumnBuilder {
             PolarsDataType::Struct(ref struct_name) => {
                 // Convert struct values to Polars structs
                 if let Some(reg) = registry {
-                    let converter = PolarsConverter::new(Arc::clone(reg));
+                    let converter = PolarsConverter::new(reg);
 
                     // Collect struct values, preserving None for sparse data
                     let struct_values: Vec<Option<crate::struct_support::StructValue>> = self
@@ -202,7 +201,7 @@ impl ColumnBuilder {
             PolarsDataType::StructArray(ref struct_name) => {
                 // Convert struct array values to Polars List(Struct)
                 if let Some(reg) = registry {
-                    let converter = PolarsConverter::new(Arc::clone(reg));
+                    let converter = PolarsConverter::new(reg);
 
                     // Collect struct array values, preserving None for sparse data
                     let struct_array_values: Vec<Option<Vec<crate::struct_support::StructValue>>> =
@@ -253,13 +252,13 @@ impl ColumnBuilder {
 }
 
 /// A collection of column builders for constructing a DataFrame.
-pub struct DataFrameBuilder {
+pub struct DataFrameBuilder<'a> {
     timestamp: Vec<i64>,
     columns: Vec<ColumnBuilder>,
-    registry: Option<Arc<StructRegistry>>,
+    registry: Option<&'a StructRegistry>,
 }
 
-impl DataFrameBuilder {
+impl<'a> DataFrameBuilder<'a> {
     /// Creates a new DataFrameBuilder with pre-allocated capacity.
     /// Uses ~25 bytes per record as an estimate.
     pub fn new(
@@ -281,8 +280,8 @@ impl DataFrameBuilder {
     }
 
     /// Sets the struct registry for this builder.
-    pub fn with_registry(mut self, registry: StructRegistry) -> Self {
-        self.registry = Some(Arc::new(registry));
+    pub fn with_registry(mut self, registry: &'a StructRegistry) -> Self {
+        self.registry = Some(registry);
         self
     }
 
@@ -308,9 +307,8 @@ impl DataFrameBuilder {
         columns.push(Series::new("timestamp".into(), self.timestamp).into());
 
         // Add all other columns
-        let registry_ref = self.registry.as_ref();
         for builder in self.columns {
-            columns.push(builder.build(registry_ref)?.into());
+            columns.push(builder.build(self.registry)?.into());
         }
 
         DataFrame::new(columns).map_err(|e| WpilogError::PolarsError(e))
