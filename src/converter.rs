@@ -227,6 +227,38 @@ impl WpilogConverter {
                 let struct_value = deserializer.deserialize(struct_name, &record.data)?;
                 Ok(PolarsValue::Struct(struct_value))
             }
+            PolarsDataType::StructArray(struct_name) => {
+                // Deserialize struct array data using the registry
+                let struct_schema = deserializer.registry().get(struct_name).ok_or_else(|| {
+                    WpilogError::SchemaError(format!(
+                        "Struct '{}' not found in registry for array deserialization",
+                        struct_name
+                    ))
+                })?;
+
+                let struct_size = struct_schema.total_size;
+                if record.data.len() % struct_size != 0 {
+                    return Err(WpilogError::ParseError(format!(
+                        "Invalid struct array size: {} is not a multiple of struct size {}",
+                        record.data.len(),
+                        struct_size
+                    )));
+                }
+
+                // Deserialize each struct in the array
+                let num_structs = record.data.len() / struct_size;
+                let mut struct_values = Vec::with_capacity(num_structs);
+
+                for i in 0..num_structs {
+                    let start = i * struct_size;
+                    let end = start + struct_size;
+                    let struct_data = &record.data[start..end];
+                    let struct_value = deserializer.deserialize(struct_name, struct_data)?;
+                    struct_values.push(struct_value);
+                }
+
+                Ok(PolarsValue::StructArray(struct_values))
+            }
         }
     }
 }

@@ -494,4 +494,192 @@ mod tests {
 
         assert_eq!(series.len(), 2);
     }
+
+    #[test]
+    fn test_optional_values_to_series() {
+        // Test converting optional struct values (for sparse data)
+        let mut registry = StructRegistry::new();
+        registry
+            .register("Point".to_string(), "double x; double y")
+            .unwrap();
+
+        let registry_arc = Arc::new(registry);
+        let deserializer = StructDeserializer::new((*registry_arc).clone());
+        let converter = PolarsConverter::new(registry_arc);
+
+        // Create struct values with some None values
+        let mut data1 = vec![0u8; 16];
+        LittleEndian::write_f64(&mut data1[0..8], 1.0);
+        LittleEndian::write_f64(&mut data1[8..16], 2.0);
+        let value1 = deserializer.deserialize("Point", &data1).unwrap();
+
+        let mut data2 = vec![0u8; 16];
+        LittleEndian::write_f64(&mut data2[0..8], 3.0);
+        LittleEndian::write_f64(&mut data2[8..16], 4.0);
+        let value2 = deserializer.deserialize("Point", &data2).unwrap();
+
+        // Create optional values: Some, None, Some
+        let optional_values = vec![Some(value1), None, Some(value2)];
+
+        let series = converter
+            .optional_values_to_series("Point", &optional_values)
+            .unwrap();
+
+        assert_eq!(series.len(), 3);
+
+        // For structs, Polars represents None by having null values in the fields
+        // Get the struct fields using field_by_name
+        let struct_chunked = series.struct_().unwrap();
+
+        // Check the x field
+        let x_field = struct_chunked.field_by_name("x").unwrap();
+        let x_null = x_field.is_null();
+        assert!(!x_null.get(0).unwrap()); // First x should not be null
+        assert!(x_null.get(1).unwrap()); // Second x should be null (from None value)
+        assert!(!x_null.get(2).unwrap()); // Third x should not be null
+
+        // Check the y field
+        let y_field = struct_chunked.field_by_name("y").unwrap();
+        let y_null = y_field.is_null();
+        assert!(!y_null.get(0).unwrap()); // First y should not be null
+        assert!(y_null.get(1).unwrap()); // Second y should be null (from None value)
+        assert!(!y_null.get(2).unwrap()); // Third y should not be null
+    }
+
+    #[test]
+    fn test_struct_array_to_list_series() {
+        // Test converting struct arrays to Polars List(Struct) series
+        let mut registry = StructRegistry::new();
+        registry
+            .register("Velocity".to_string(), "double vx; double vy")
+            .unwrap();
+
+        let registry_arc = Arc::new(registry);
+        let deserializer = StructDeserializer::new((*registry_arc).clone());
+        let converter = PolarsConverter::new(registry_arc);
+
+        // Create two arrays of structs
+        // Array 1: [(1.0, 2.0), (3.0, 4.0)]
+        let mut data1_1 = vec![0u8; 16];
+        LittleEndian::write_f64(&mut data1_1[0..8], 1.0);
+        LittleEndian::write_f64(&mut data1_1[8..16], 2.0);
+        let value1_1 = deserializer.deserialize("Velocity", &data1_1).unwrap();
+
+        let mut data1_2 = vec![0u8; 16];
+        LittleEndian::write_f64(&mut data1_2[0..8], 3.0);
+        LittleEndian::write_f64(&mut data1_2[8..16], 4.0);
+        let value1_2 = deserializer.deserialize("Velocity", &data1_2).unwrap();
+
+        let array1 = vec![value1_1, value1_2];
+
+        // Array 2: [(5.0, 6.0)]
+        let mut data2_1 = vec![0u8; 16];
+        LittleEndian::write_f64(&mut data2_1[0..8], 5.0);
+        LittleEndian::write_f64(&mut data2_1[8..16], 6.0);
+        let value2_1 = deserializer.deserialize("Velocity", &data2_1).unwrap();
+
+        let array2 = vec![value2_1];
+
+        // Convert each array to a series
+        let series1 = converter.values_to_series("Velocity", &array1).unwrap();
+        let series2 = converter.values_to_series("Velocity", &array2).unwrap();
+
+        // Create a List series from these
+        let list_series = Series::new("velocities".into(), vec![series1, series2]);
+
+        assert_eq!(list_series.len(), 2);
+
+        // Verify the dtype is List(Struct)
+        match list_series.dtype() {
+            DataType::List(inner) => {
+                match inner.as_ref() {
+                    DataType::Struct(_) => {} // Success
+                    _ => panic!("Expected List(Struct), got List({})", inner),
+                }
+            }
+            _ => panic!("Expected List type, got {}", list_series.dtype()),
+        }
+    }
+
+    #[test]
+    fn test_empty_struct_array() {
+        // Test converting empty struct arrays
+        let mut registry = StructRegistry::new();
+        registry
+            .register("Point".to_string(), "double x; double y")
+            .unwrap();
+
+        let converter = PolarsConverter::new(Arc::new(registry));
+
+        // Create empty struct array and verify the dtype
+        let struct_dtype = converter.schema_to_dtype("Point").unwrap();
+        let empty_series = Series::new_empty("".into(), &struct_dtype);
+
+        assert_eq!(empty_series.len(), 0);
+
+        // Verify the dtype is correct
+        match empty_series.dtype() {
+            DataType::Struct(_) => {} // Success
+            _ => panic!("Expected Struct type, got {}", empty_series.dtype()),
+        }
+    }
+
+    #[test]
+    fn test_nested_struct_in_array() {
+        // Test struct arrays where each element contains nested structs
+        let mut registry = StructRegistry::new();
+
+        // Register nested struct
+        registry
+            .register("Vector2d".to_string(), "double x; double y")
+            .unwrap();
+
+        // Register struct with nested field
+        registry
+            .register("Pose".to_string(), "Vector2d position; double rotation")
+            .unwrap();
+
+        let registry_arc = Arc::new(registry);
+        let deserializer = StructDeserializer::new((*registry_arc).clone());
+        let converter = PolarsConverter::new(registry_arc);
+
+        // Create struct array with nested structs
+        let mut data1 = vec![0u8; 24];
+        LittleEndian::write_f64(&mut data1[0..8], 1.0); // position.x
+        LittleEndian::write_f64(&mut data1[8..16], 2.0); // position.y
+        LittleEndian::write_f64(&mut data1[16..24], 0.5); // rotation
+        let value1 = deserializer.deserialize("Pose", &data1).unwrap();
+
+        let mut data2 = vec![0u8; 24];
+        LittleEndian::write_f64(&mut data2[0..8], 3.0); // position.x
+        LittleEndian::write_f64(&mut data2[8..16], 4.0); // position.y
+        LittleEndian::write_f64(&mut data2[16..24], 1.5); // rotation
+        let value2 = deserializer.deserialize("Pose", &data2).unwrap();
+
+        let series = converter
+            .values_to_series("Pose", &[value1, value2])
+            .unwrap();
+
+        assert_eq!(series.len(), 2);
+
+        // Verify the dtype contains nested struct
+        match series.dtype() {
+            DataType::Struct(fields) => {
+                assert_eq!(fields.len(), 2);
+                assert_eq!(fields[0].name().as_str(), "position");
+                assert_eq!(fields[1].name().as_str(), "rotation");
+
+                // Check that position is a nested struct
+                match fields[0].dtype() {
+                    DataType::Struct(nested_fields) => {
+                        assert_eq!(nested_fields.len(), 2);
+                        assert_eq!(nested_fields[0].name().as_str(), "x");
+                        assert_eq!(nested_fields[1].name().as_str(), "y");
+                    }
+                    _ => panic!("Expected nested Struct for position field"),
+                }
+            }
+            _ => panic!("Expected Struct type"),
+        }
+    }
 }
