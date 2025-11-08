@@ -246,7 +246,7 @@ fn apply_filter(df: DataFrame, col_name: &str, value: &str) -> Result<DataFrame>
 }
 
 fn schema_command(input: PathBuf, verbose: bool) -> Result<()> {
-    use wpilog_polars::datalog::{DataLogIterator, DataLogReader};
+    use wpilog_polars::datalog::DataLogReader;
     use wpilog_polars::schema::WpilogSchema;
 
     println!("Reading schema from {}...", input.display());

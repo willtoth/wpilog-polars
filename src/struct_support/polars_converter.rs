@@ -93,18 +93,11 @@ impl PolarsConverter {
         }
 
         // Create a StructChunked with a single row
-        let dtype = self.schema_to_dtype(&value.struct_name)?;
-        let fields = match &dtype {
-            DataType::Struct(f) => f.clone(),
-            _ => unreachable!(),
-        };
-
+        // The second parameter should be the length of the series (number of rows), not number of fields
+        let len = series_vec.first().map(|s| s.len()).unwrap_or(0);
         let series_refs: Vec<&Series> = series_vec.iter().collect();
-        let struct_chunked = StructChunked::from_series(
-            PlSmallStr::from(""),
-            series_refs.into_iter(),
-            fields.into_iter(),
-        )?;
+        let struct_chunked =
+            StructChunked::from_series(PlSmallStr::from(""), len, series_refs.into_iter())?;
 
         Ok(struct_chunked.into_series())
     }
@@ -112,18 +105,21 @@ impl PolarsConverter {
     /// Convert a FieldValue to a Polars Series (single value).
     fn field_value_to_series(&self, name: &str, value: &FieldValue) -> Result<Series> {
         let series = match value {
-            FieldValue::Bool(v) => Series::new(name.into(), &[*v]),
-            FieldValue::Char(v) => Series::new(name.into(), &[*v as u8]),
-            FieldValue::Int8(v) => Series::new(name.into(), &[*v]),
-            FieldValue::Int16(v) => Series::new(name.into(), &[*v]),
-            FieldValue::Int32(v) => Series::new(name.into(), &[*v]),
-            FieldValue::Int64(v) => Series::new(name.into(), &[*v]),
-            FieldValue::UInt8(v) => Series::new(name.into(), &[*v]),
-            FieldValue::UInt16(v) => Series::new(name.into(), &[*v]),
-            FieldValue::UInt32(v) => Series::new(name.into(), &[*v]),
-            FieldValue::UInt64(v) => Series::new(name.into(), &[*v]),
-            FieldValue::Float32(v) => Series::new(name.into(), &[*v]),
-            FieldValue::Float64(v) => Series::new(name.into(), &[*v]),
+            FieldValue::Bool(v) => Series::new(name.into(), [*v].as_slice()),
+            FieldValue::Char(v) => {
+                let val = *v as u8;
+                UInt8Chunked::from_slice(name.into(), &[val]).into_series()
+            }
+            FieldValue::Int8(v) => Series::new(name.into(), [*v].as_slice()),
+            FieldValue::Int16(v) => Series::new(name.into(), [*v].as_slice()),
+            FieldValue::Int32(v) => Series::new(name.into(), [*v].as_slice()),
+            FieldValue::Int64(v) => Series::new(name.into(), [*v].as_slice()),
+            FieldValue::UInt8(v) => UInt8Chunked::from_slice(name.into(), &[*v]).into_series(),
+            FieldValue::UInt16(v) => UInt16Chunked::from_slice(name.into(), &[*v]).into_series(),
+            FieldValue::UInt32(v) => Series::new(name.into(), [*v].as_slice()),
+            FieldValue::UInt64(v) => Series::new(name.into(), [*v].as_slice()),
+            FieldValue::Float32(v) => Series::new(name.into(), [*v].as_slice()),
+            FieldValue::Float64(v) => Series::new(name.into(), [*v].as_slice()),
             FieldValue::Array(values) => self.array_to_series(name, values)?,
             FieldValue::Struct(nested) => self.value_to_series(nested)?.with_name(name.into()),
         };
@@ -197,7 +193,7 @@ impl PolarsConverter {
                         _ => panic!("Inconsistent array types"),
                     })
                     .collect();
-                Series::new("".into(), vals.as_slice())
+                UInt8Chunked::from_slice("".into(), &vals).into_series()
             }
             FieldValue::UInt16(_) => {
                 let vals: Vec<u16> = values
@@ -207,7 +203,7 @@ impl PolarsConverter {
                         _ => panic!("Inconsistent array types"),
                     })
                     .collect();
-                Series::new("".into(), vals.as_slice())
+                UInt16Chunked::from_slice("".into(), &vals).into_series()
             }
             FieldValue::UInt32(_) => {
                 let vals: Vec<u32> = values
@@ -306,27 +302,23 @@ impl PolarsConverter {
             let concatenated = if series_vec.len() == 1 {
                 series_vec.into_iter().next().unwrap()
             } else {
-                // Use polars concat function
-                let refs: Vec<&Series> = series_vec.iter().collect();
-                polars::functions::concat_series(&refs)?
+                // Concatenate series vertically using append
+                let mut base = series_vec[0].clone();
+                for s in &series_vec[1..] {
+                    base.append(s)?;
+                }
+                base
             };
 
             field_series_vec.push(concatenated);
         }
 
         // Create a StructChunked from the field series
-        let dtype = self.schema_to_dtype(struct_name)?;
-        let fields = match &dtype {
-            DataType::Struct(f) => f.clone(),
-            _ => unreachable!(),
-        };
-
+        // The second parameter should be the length of the series (number of rows), not number of fields
+        let len = field_series_vec.first().map(|s| s.len()).unwrap_or(0);
         let series_refs: Vec<&Series> = field_series_vec.iter().collect();
-        let struct_chunked = StructChunked::from_series(
-            PlSmallStr::from(""),
-            series_refs.into_iter(),
-            fields.into_iter(),
-        )?;
+        let struct_chunked =
+            StructChunked::from_series(PlSmallStr::from(""), len, series_refs.into_iter())?;
 
         Ok(struct_chunked.into_series())
     }

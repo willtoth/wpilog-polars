@@ -1,13 +1,14 @@
 //! Main conversion logic from WPILog to Polars DataFrame.
 //!
 //! This module implements the two-pass algorithm:
-//! 1. First pass: Infer schema from START control records
+//! 1. First pass: Infer schema from START control records and build struct registry
 //! 2. Second pass: Accumulate data into column builders
 
 use crate::builders::DataFrameBuilder;
 use crate::datalog::{DataLogReader, DataLogRecord};
 use crate::error::{Result, WpilogError};
 use crate::schema::WpilogSchema;
+use crate::struct_support::{StructDeserializer, StructRegistry};
 use crate::types::{PolarsDataType, PolarsValue};
 use polars::prelude::*;
 
@@ -25,15 +26,60 @@ impl WpilogConverter {
             ));
         }
 
-        // First pass: infer schema
-        let schema = WpilogSchema::infer_from_records(reader.records()?)?;
+        // First pass: build struct registry and infer schema
+        let (registry, schema) = Self::build_registry_and_schema(&reader)?;
 
         // Second pass: accumulate data
-        Self::accumulate_data(reader, &schema)
+        Self::accumulate_data(reader, &schema, registry)
+    }
+
+    /// First pass: builds struct registry from structschema entries and infers schema.
+    fn build_registry_and_schema(reader: &DataLogReader) -> Result<(StructRegistry, WpilogSchema)> {
+        let mut registry = StructRegistry::new();
+        let mut schema_entries = std::collections::HashMap::new();
+
+        // Collect all structschema entries first
+        for record_result in reader.records()? {
+            let record = record_result?;
+
+            if record.is_start() {
+                let start_data = record.get_start_data()?;
+
+                // Check if this is a struct schema definition
+                if start_data.type_name == "structschema" {
+                    schema_entries.insert(start_data.entry, start_data.name.clone());
+                }
+            }
+        }
+
+        // Now read the data for structschema entries to populate the registry
+        for record_result in reader.records()? {
+            let record = record_result?;
+
+            if !record.is_control() && schema_entries.contains_key(&record.entry) {
+                // This is struct schema data
+                let struct_name = schema_entries.get(&record.entry).unwrap();
+                let schema_text = record.get_string();
+
+                registry.register(struct_name.clone(), &schema_text)?;
+            }
+        }
+
+        // Infer the main schema
+        let schema = WpilogSchema::infer_from_records(reader.records()?)?;
+
+        Ok((registry, schema))
     }
 
     /// Second pass: accumulates data into a DataFrame.
-    fn accumulate_data(reader: DataLogReader, schema: &WpilogSchema) -> Result<DataFrame> {
+    fn accumulate_data(
+        reader: DataLogReader,
+        schema: &WpilogSchema,
+        registry: StructRegistry,
+    ) -> Result<DataFrame> {
+        // Create deserializer for struct data
+        let deserializer = StructDeserializer::new(registry.clone());
+
         // Estimate capacity (rough approximation)
         let estimated_records = reader.data.len() / 25;
 
@@ -42,8 +88,9 @@ impl WpilogConverter {
         let column_types: Vec<PolarsDataType> =
             schema.columns().iter().map(|c| c.dtype.clone()).collect();
 
-        // Create builder
-        let mut builder = DataFrameBuilder::new(column_names, column_types, estimated_records);
+        // Create builder with registry
+        let mut builder = DataFrameBuilder::new(column_names, column_types, estimated_records)
+            .with_registry(registry);
 
         // Track which columns have been updated for the current timestamp
         let mut current_timestamp: Option<i64> = None;
@@ -91,7 +138,7 @@ impl WpilogConverter {
             }
 
             // Parse the record value based on its type
-            let value = Self::parse_record_value(&record, &column_info.dtype)?;
+            let value = Self::parse_record_value(&record, &column_info.dtype, &deserializer)?;
             current_values[column_index] = Some(value);
         }
 
@@ -105,7 +152,11 @@ impl WpilogConverter {
     }
 
     /// Parses a data record value based on its type.
-    fn parse_record_value(record: &DataLogRecord, dtype: &PolarsDataType) -> Result<PolarsValue> {
+    fn parse_record_value(
+        record: &DataLogRecord,
+        dtype: &PolarsDataType,
+        deserializer: &StructDeserializer,
+    ) -> Result<PolarsValue> {
         match dtype {
             PolarsDataType::Float64 => Ok(PolarsValue::Float64(record.get_double()?)),
             PolarsDataType::Float32 => Ok(PolarsValue::Float32(record.get_float()?)),
@@ -123,10 +174,10 @@ impl WpilogConverter {
                 Ok(PolarsValue::Float64Array(record.get_double_array()?))
             }
             PolarsDataType::StringArray => Ok(PolarsValue::StringArray(record.get_string_array()?)),
-            PolarsDataType::Struct(_) => {
-                // Store raw binary data for struct values
-                // TODO: Deserialize using struct_support module when Polars integration is complete
-                Ok(PolarsValue::Struct(record.data.clone()))
+            PolarsDataType::Struct(struct_name) => {
+                // Deserialize struct data using the registry
+                let struct_value = deserializer.deserialize(struct_name, &record.data)?;
+                Ok(PolarsValue::Struct(struct_value))
             }
         }
     }
