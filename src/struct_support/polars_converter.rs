@@ -322,6 +322,91 @@ impl PolarsConverter {
 
         Ok(struct_chunked.into_series())
     }
+
+    /// Convert a slice of optional struct values to a Polars Series.
+    /// This preserves null values for sparse data.
+    pub fn optional_values_to_series(
+        &self,
+        struct_name: &str,
+        values: &[Option<StructValue>],
+    ) -> Result<Series> {
+        if values.is_empty() {
+            // Return an empty struct series
+            let dtype = self.schema_to_dtype(struct_name)?;
+            return Ok(Series::new_empty(PlSmallStr::from(""), &dtype));
+        }
+
+        let schema = self.registry.get(struct_name).ok_or_else(|| {
+            WpilogError::SchemaError(format!("Struct '{}' not found in registry", struct_name))
+        })?;
+
+        // Collect all values for each field, preserving nulls
+        let mut field_series_vec = Vec::new();
+
+        for field in &schema.fields {
+            let field_name = match field {
+                StructField::Standard(f) => &f.name,
+                StructField::BitField(f) => &f.name,
+            };
+
+            // Collect values for this field from all struct values, with nulls
+            let mut series_vec = Vec::new();
+            for opt_value in values {
+                let series = match opt_value {
+                    Some(value) => {
+                        let field_value = value.fields.get(field_name).ok_or_else(|| {
+                            WpilogError::ParseError(format!(
+                                "Field '{}' not found in struct value",
+                                field_name
+                            ))
+                        })?;
+                        self.field_value_to_series(field_name, field_value)?
+                    }
+                    None => {
+                        // Create a null value for this field
+                        self.create_null_field_series(field_name, field)?
+                    }
+                };
+                series_vec.push(series);
+            }
+
+            // Concatenate all series for this field
+            let concatenated = if series_vec.len() == 1 {
+                series_vec.into_iter().next().unwrap()
+            } else {
+                // Concatenate series vertically using append
+                let mut base = series_vec[0].clone();
+                for s in &series_vec[1..] {
+                    base.append(s)?;
+                }
+                base
+            };
+
+            field_series_vec.push(concatenated);
+        }
+
+        // Create a StructChunked from the field series
+        let len = field_series_vec.first().map(|s| s.len()).unwrap_or(0);
+        let series_refs: Vec<&Series> = field_series_vec.iter().collect();
+        let struct_chunked =
+            StructChunked::from_series(PlSmallStr::from(""), len, series_refs.into_iter())?;
+
+        Ok(struct_chunked.into_series())
+    }
+
+    /// Create a null value series for a field
+    fn create_null_field_series(&self, name: &str, field: &StructField) -> Result<Series> {
+        match field {
+            StructField::Standard(std_field) => {
+                let dtype = self.field_type_to_dtype(&std_field.field_type)?;
+                Ok(Series::full_null(name.into(), 1, &dtype))
+            }
+            StructField::BitField(_) => {
+                // Bit-fields are represented as Int64
+                Ok(Series::full_null(name.into(), 1, &DataType::Int64))
+            }
+        }
+    }
 }
 
 #[cfg(test)]

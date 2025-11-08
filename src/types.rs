@@ -44,6 +44,12 @@ impl PolarsDataType {
             "msgpack" => Ok(PolarsDataType::String), // Serialize msgpack as string
             "json" => Ok(PolarsDataType::String),    // JSON as string
             "protobuf" => Ok(PolarsDataType::String), // Protobuf as string
+            // Check for struct array types (format: "struct:TypeName[]")
+            _ if type_name.starts_with("struct:") && type_name.ends_with("[]") => {
+                // Arrays of structs are not yet fully supported, treat as binary string
+                eprintln!("Warning: Struct arrays ('{}') not yet fully supported, treating as binary string", type_name);
+                Ok(PolarsDataType::String)
+            }
             // Check for struct types (format: "struct:TypeName")
             _ if type_name.starts_with("struct:") => {
                 let struct_name = type_name.strip_prefix("struct:").unwrap().to_string();
