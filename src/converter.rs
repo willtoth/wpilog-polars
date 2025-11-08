@@ -52,7 +52,8 @@ impl WpilogConverter {
             }
         }
 
-        // Now read the data for structschema entries to populate the registry
+        // Collect all struct schema definitions
+        let mut schema_defs = std::collections::HashMap::new();
         for record_result in reader.records()? {
             let record = record_result?;
 
@@ -61,7 +62,52 @@ impl WpilogConverter {
                 let struct_name = schema_entries.get(&record.entry).unwrap();
                 let schema_text = record.get_string();
 
-                registry.register(struct_name.clone(), &schema_text)?;
+                // Extract just the struct type name from the full path
+                // Format: "/.schema/struct:StructName" -> "StructName"
+                let simple_name =
+                    if let Some(stripped) = struct_name.strip_prefix("/.schema/struct:") {
+                        stripped.to_string()
+                    } else {
+                        struct_name.clone()
+                    };
+
+                schema_defs.insert(simple_name, schema_text);
+            }
+        }
+
+        // Register structs with dependency resolution (retry until all are registered or no progress)
+        let mut registered = std::collections::HashSet::new();
+
+        // Loop until all structs are registered or we make no progress in an iteration
+        while registered.len() < schema_defs.len() {
+            let start_count = registered.len();
+
+            for (struct_name, schema_text) in &schema_defs {
+                if registered.contains(struct_name) {
+                    continue;
+                }
+
+                // Try to register this struct (ignore errors, will retry in next iteration)
+                if registry.register(struct_name.clone(), schema_text).is_ok() {
+                    registered.insert(struct_name.clone());
+                }
+            }
+
+            // If we made no progress in this iteration, break to avoid infinite loop
+            if registered.len() == start_count {
+                break;
+            }
+        }
+
+        // Report any structs that couldn't be registered
+        if registered.len() < schema_defs.len() {
+            for (struct_name, _) in &schema_defs {
+                if !registered.contains(struct_name) {
+                    eprintln!(
+                        "Warning: Failed to register struct '{}' - possible missing dependency",
+                        struct_name
+                    );
+                }
             }
         }
 
@@ -115,9 +161,11 @@ impl WpilogConverter {
             }
 
             // Get column info for this entry
-            let column_info = schema.get_column_by_entry(record.entry).ok_or_else(|| {
-                WpilogError::InvalidEntry(format!("Entry ID {} not found in schema", record.entry))
-            })?;
+            // Skip entries that aren't in the schema (e.g., structschema entries)
+            let column_info = match schema.get_column_by_entry(record.entry) {
+                Some(info) => info,
+                None => continue, // Skip this entry
+            };
 
             // Find the column index
             let column_index = schema

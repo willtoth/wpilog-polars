@@ -172,11 +172,11 @@ impl ColumnBuilder {
                 if let Some(reg) = registry {
                     let converter = PolarsConverter::new(Arc::clone(reg));
 
-                    // Collect struct values
-                    let struct_values: Vec<_> = self
+                    // Collect struct values, preserving None for sparse data
+                    let struct_values: Vec<Option<crate::struct_support::StructValue>> = self
                         .values
                         .into_iter()
-                        .filter_map(|opt| match opt {
+                        .map(|opt| match opt {
                             Some(PolarsValue::Struct(sv)) => Some(sv),
                             _ => None,
                         })
@@ -188,8 +188,9 @@ impl ColumnBuilder {
                         return Ok(Series::new_empty(self.name.as_str().into(), &dtype));
                     }
 
-                    // Convert all struct values to a single series
-                    let series = converter.values_to_series(struct_name, &struct_values)?;
+                    // Convert all struct values to a single series, preserving nulls
+                    let series =
+                        converter.optional_values_to_series(struct_name, &struct_values)?;
                     Ok(series.with_name(self.name.as_str().into()))
                 } else {
                     // Fallback: convert to hex strings if no registry available
