@@ -2,6 +2,7 @@ use anyhow::{Context, Result};
 use clap::{Parser, Subcommand, ValueEnum};
 use polars::prelude::*;
 use std::path::PathBuf;
+use std::time::Instant;
 use wpilog_polars::WpilogParser;
 
 /// High-performance WPILog to Polars DataFrame converter
@@ -159,10 +160,12 @@ fn parse_command(
 ) -> Result<()> {
     // Parse the WPILog file
     println!("Parsing {}...", input.display());
+    let parse_start = Instant::now();
     let mut df = WpilogParser::from_file(&input)
         .with_context(|| format!("Failed to parse WPILog file: {}", input.display()))?;
+    let parse_duration = parse_start.elapsed();
 
-    println!("Loaded {} rows and {} columns", df.height(), df.width());
+    println!("Loaded {} rows and {} columns ({:.3}s)", df.height(), df.width(), parse_duration.as_secs_f64());
 
     // Apply column selection
     if let Some(cols) = columns {
@@ -217,8 +220,10 @@ fn parse_command(
         OutputFormat::Parquet => {
             let output_path = output.context("Output path required for Parquet format")?;
             let file = std::fs::File::create(&output_path)?;
+            let save_start = Instant::now();
             ParquetWriter::new(file).finish(&mut df)?;
-            println!("Exported to Parquet: {}", output_path.display());
+            let save_duration = save_start.elapsed();
+            println!("Exported to Parquet: {} ({:.3}s)", output_path.display(), save_duration.as_secs_f64());
         }
     }
 
@@ -370,10 +375,12 @@ fn convert_command(
     };
 
     // Parse the WPILog file
+    let parse_start = Instant::now();
     let mut df = WpilogParser::from_file(&input)
         .with_context(|| format!("Failed to parse WPILog file: {}", input.display()))?;
+    let parse_duration = parse_start.elapsed();
 
-    println!("Loaded {} rows and {} columns", df.height(), df.width());
+    println!("Loaded {} rows and {} columns ({:.3}s)", df.height(), df.width(), parse_duration.as_secs_f64());
 
     // Write to output format
     match out_format {
@@ -384,10 +391,12 @@ fn convert_command(
         }
         ConvertFormat::Parquet => {
             let file = std::fs::File::create(&output)?;
+            let save_start = Instant::now();
             ParquetWriter::new(file)
                 .with_compression(to_parquet_compression(compression))
                 .finish(&mut df)?;
-            println!("Successfully converted to Parquet: {}", output.display());
+            let save_duration = save_start.elapsed();
+            println!("Successfully converted to Parquet: {} ({:.3}s)", output.display(), save_duration.as_secs_f64());
         }
     }
 
