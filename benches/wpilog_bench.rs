@@ -1,4 +1,5 @@
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
+use pprof::criterion::Output;
 use wpilog_polars::WpilogParser;
 
 /// Helper function to create a WPILog file with specified number of records
@@ -164,12 +165,14 @@ fn benchmark_schema_inference(c: &mut Criterion) {
     });
 }
 
-criterion_group!(
-    benches,
-    benchmark_parse_small,
-    benchmark_parse_medium,
-    benchmark_parse_large,
-    benchmark_parse_very_large,
-    benchmark_schema_inference
-);
+criterion_group! {
+    name = benches;
+    config = Criterion::default().with_profiler(pprof::criterion::PProfProfiler::new(100, Output::Flamegraph(None)));
+    targets =
+        benchmark_parse_small,
+        benchmark_parse_medium,
+        benchmark_parse_large,
+        benchmark_parse_very_large,
+        benchmark_schema_inference
+}
 criterion_main!(benches);

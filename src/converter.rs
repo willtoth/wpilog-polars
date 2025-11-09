@@ -138,7 +138,7 @@ impl WpilogConverter {
         schema: &WpilogSchema,
         registry: StructRegistry,
     ) -> Result<DataFrame> {
-        // Create deserializer for struct data (using reference to avoid any cloning)
+        // Create deserializer for struct data
         let deserializer = StructDeserializer::new(&registry);
 
         // Estimate capacity (rough approximation)
@@ -149,7 +149,7 @@ impl WpilogConverter {
         let column_types: Vec<PolarsDataType> =
             schema.columns().iter().map(|c| c.dtype.clone()).collect();
 
-        // Create builder with registry reference (no cloning needed)
+        // Create builder with registry reference
         let mut builder = DataFrameBuilder::new(column_names, column_types, estimated_records)
             .with_registry(&registry);
 
